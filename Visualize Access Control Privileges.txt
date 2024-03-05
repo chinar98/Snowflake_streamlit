@@ -1,0 +1,102 @@
+import random
+import pandas as pd
+import streamlit as st
+from snowflake.snowpark.context import get_active_session
+import plotly.express as px 
+
+
+st.set_page_config(page_title="ACP Sunburst Dashboard", layout="wide")
+st.header("Wanted To Visualize Your Access Control Privileges?🚨🚨")
+st.subheader('With SiS DataApp, you can quickly identify the access that has been granted to your users. Try Yourself!')
+
+session = get_active_session()
+
+def read_data():
+    with st.spinner("Generating Metadata..."):
+        master_df = session.sql("""
+                with cte as (
+                select
+                GRANTEE_NAME,
+                PRIVILEGE,
+                GRANTED_ON,
+                COUNT(GRANTED_ON) COUNT
+                FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
+                WHERE GRANTED_ON NOT IN ('ROLE')
+                GROUP BY ALL
+                ),
+                tb_data as (
+                select GRANTEE_NAME AS USERNAME,
+                ROLE
+                from snowflake.account_usage.grants_to_users
+                WHERE DELETED_ON IS NULL
+                )
+                select * EXCLUDE(ROLE) FROM TB_DATA T
+                JOIN CTE C
+                ON T.ROLE = C.GRANTEE_NAME
+                """).to_pandas()
+    
+        user_df = session.sql("""
+                with cte as (
+                select
+                GRANTEE_NAME,
+                PRIVILEGE,
+                GRANTED_ON,
+                iff(GRANTED_ON NOT IN ('ACCOUNT','DATABASE','WAREHOUSE'),TABLE_CATALOG||'.'||TABLE_SCHEMA||'.'||NAME,NAME) AS NAME,
+                COUNT(*) AS COUNT
+                FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
+                WHERE GRANTED_ON NOT IN ('ROLE')
+                GROUP BY ALL
+                ),
+                tb_data as (
+                select GRANTEE_NAME AS USERNAME,
+                ROLE
+                from snowflake.account_usage.grants_to_users
+                WHERE DELETED_ON IS NULL
+                )
+                select * EXCLUDE(ROLE) FROM TB_DATA T
+                JOIN CTE C
+                ON T.ROLE = C.GRANTEE_NAME
+                """).to_pandas()
+    return master_df , user_df
+
+
+try:
+    master_df,detailed_df = read_data()
+    usernames = master_df['USERNAME'].unique().tolist()
+
+    fig_master = px.sunburst(master_df, path=['USERNAME', 'GRANTEE_NAME','PRIVILEGE','GRANTED_ON'], 
+    values='COUNT',hover_data=['COUNT'],color='GRANTEE_NAME') 
+ 
+    fig_master.update_layout(margin = dict(t=0, l=0, r=0, b=0),height=800)
+
+    st.plotly_chart(fig_master,use_container_width=True)   
+    st.markdown('---')
+    input_col1,input_col2 = st.columns([3,4])
+
+    with input_col1:
+        input_form = st.form(key="acp_form")
+        input_form.subheader('Want To Investigate Specific Users?')
+        users_to_analyze = input_form.multiselect(
+        "Wanted to Check Any User's Details?",options=usernames)
+        submit = input_form.form_submit_button("Submit")
+
+    if submit:
+            with st.spinner("Generating Insights..."):
+                try:
+                    with input_col2:
+                        filtered_userdata_df = detailed_df[detailed_df['USERNAME'].isin(users_to_analyze)]
+                        user_specific_fig = px.sunburst(filtered_userdata_df, path=['USERNAME', 'GRANTEE_NAME','PRIVILEGE','GRANTED_ON','NAME'], 
+            values='COUNT',hover_data=['COUNT'],color='NAME')
+    
+                        user_specific_fig.update_layout(margin = dict(t=0, l=0, r=0, b=0),height=600)
+                        st.plotly_chart(user_specific_fig,use_container_width=True)
+                except Exception as e:
+                    st.error("Something Went Wrong!", icon="🚨")
+            with input_col1:
+                st.dataframe(filtered_userdata_df)
+
+
+
+except Exception as e:
+    st.write(e)
+    st.success(f"Something Went Wrong!")
